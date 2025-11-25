@@ -1,3 +1,18 @@
+"""
+env1-box-arrange.py
+
+驱动程序：对格子搬箱子任务进行多策略（中心化/去中心化/混合）求解实验。
+
+主要功能：
+- 从 `env1_create` 读取预先生成的环境状态（pg_state）
+- 依据不同的 `cen_decen_framework`（例如 DMAS, CMAS, HMAS-1, HMAS-2）与对话历史策略，
+  迭代调用 LLM（封装在 `LLM.GPT_response` 中）生成动作计划
+- 对 LLM 返回的 JSON 动作进行语法检查（`with_action_syntactic_check_func`）、本地可行性检验
+  （在 HMAS-2/HMAS-1 情况）并最终应用动作更新环境状态（`action_from_response`）
+
+注意：脚本末尾包含批量实验配置，会调用 `run_exp` 若干次并把结果写入磁盘。
+"""
+
 from LLM import *
 from prompt_env1 import *
 from env1_create import *
@@ -11,9 +26,27 @@ import numpy as np
 import shutil
 import time
 
+# 可选的框架/对话历史说明：
 # cen_decen_framework = 'DMAS', 'HMAS-1', 'CMAS', 'HMAS-2'
 # dialogue_history_method = '_w_all_dialogue_history', '_wo_any_dialogue_history', '_w_only_state_action_history'
+
+
 def run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_limit, dialogue_history_method = '_w_all_dialogue_history', cen_decen_framework = 'CMAS', model_name = 'gpt-3'):
+  """
+  运行一次环境调整实验（单个 pg_state 实例）。
+
+  参数:
+  - Saving_path: 环境文件根目录（由 env1_create 生成的场景文件夹）
+  - pg_row_num, pg_column_num: 网格行/列数
+  - iteration_num: 使用的 pg_state 索引（对应于 env1_create 生成的 pg_state 文件）
+  - query_time_limit: 最多调用 LLM 的时间步数
+  - dialogue_history_method: 对话历史策略标识
+  - cen_decen_framework: 协作/中心化框架选择
+  - model_name: 使用的 LLM 模型名称
+
+  返回:
+  - 一组用于记录实验过程的列表和最终状态，格式与原脚本保持一致
+  """
 
   Saving_path_result = Saving_path+f'/env_pg_state_{pg_row_num}_{pg_column_num}/pg_state{iteration_num}/{cen_decen_framework}{dialogue_history_method}_{model_name}'
 
@@ -36,6 +69,8 @@ def run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_li
   with open(Saving_path_result+'/pg_state' + '/pg_state'+str(1)+'.json', 'w') as f:
       json.dump(pg_dict, f)
 
+  # 记录 summary：将初始 pg_state 写入结果目录，便于回溯与复现实验
+
   ### Start the Game! Query LLM for response
   print(f'query_time_limit: {query_time_limit}')
   for index_query_times in range(query_time_limit): # The upper limit of calling LLMs
@@ -43,6 +78,7 @@ def run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_li
     print(pg_dict)
     state_update_prompt = state_update_func(pg_row_num, pg_column_num, pg_dict)
     if cen_decen_framework in ('DMAS'):
+      # DMAS: 完全去中心化，每个本地 agent 单独决策并执行（通过对每个本地 agent 调用 LLM）
       print('--------DMAS method starts--------')
       match = None
       count_round = 0
@@ -92,6 +128,7 @@ def run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_li
                 break
       dialogue_history_list.append(dialogue_history)
     else:
+      # 中央化或混合策略：一次生成中央计划，然后根据 HMAS-* 的不同策略进行本地校验/修正
       if cen_decen_framework in ('CMAS', 'HMAS-1', 'HMAS-1-fast', 'HMAS-2'):
         user_prompt_1 = input_prompt_1_func_total(state_update_prompt, response_total_list,
                                   pg_state_list, dialogue_history_list,
@@ -124,6 +161,8 @@ def run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_li
 
       # Local agent response for checking the feasibility of actions
       if cen_decen_framework == 'HMAS-2':
+        # HMAS-2: 中央计划先行，随后为每个本地 agent 单独询问其是否同意（I Agree）
+        # 如果本地 agent 给出反馈，则把反馈汇总回中央，中央可再次修正并输出最终计划
         print('--------HMAS-2 method starts--------')
         dialogue_history = f'Central Planner: {response}\n'
         #print(f'Original plan response: {response}')
@@ -169,6 +208,8 @@ def run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_li
         dialogue_history_list.append(dialogue_history)
 
       elif cen_decen_framework == 'HMAS-1' or cen_decen_framework == 'HMAS-1-fast':
+        # HMAS-1: 中央先行生成计划，随后逐个本地 agent 询问其对该计划的可行性或局部修改；
+        # HMAS-1-fast 为加速版本，在第二轮开始时允许本地 agent 使用初始计划进行快速回应
         print('--------HMAS-1 method starts--------')
         count_round = 0
         dialogue_history = f'Central Planner: {response}\n'
@@ -241,6 +282,7 @@ def run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_li
       with open(Saving_path_result+'/dialogue_history' + '/dialogue_history'+str(index_query_times)+'.txt', 'w') as f:
           f.write(dialogue_history_list[index_query_times])
     try:
+      # 根据解析后的响应执行动作并更新 pg_dict；action_from_response 会返回系统层面的错误信息（若有）
       system_error_feedback, pg_dict_returned = action_from_response(pg_dict, original_response_dict)
       if system_error_feedback != '':
         print(system_error_feedback)
@@ -279,7 +321,7 @@ for pg_row_num, pg_column_num in [(2,2), (2,4), (4,4), (4,8)]:
   for iteration_num in range(10):
     print('-------###-------###-------###-------')
     print(f'Row num is: {pg_row_num}, Column num is: {pg_column_num}, Iteration num is: {iteration_num}\n\n')
-
+    # 运行一次实验（对每种网格尺寸和重复次数执行 run_exp）
     user_prompt_list, response_total_list, pg_state_list, success_failure, index_query_times, token_num_count_list, Saving_path_result = run_exp(Saving_path, pg_row_num, pg_column_num, iteration_num, query_time_limit, dialogue_history_method='_w_only_state_action_history',
             cen_decen_framework='HMAS-2', model_name = model_name)
     with open(Saving_path_result + '/token_num_count.txt', 'w') as f:

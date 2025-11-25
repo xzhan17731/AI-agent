@@ -1,3 +1,17 @@
+"""
+环境构建与测试工具集 (rumor_test_env.py)
+
+此模块包含用于生成多种社交网络拓扑、创建 agent 配置、以及构造
+谣言和帖子样本的辅助函数。目标是为多智能体谣言传播实验提供可复现
+的环境（graphml、agent json、rumor/post 列表等）。
+
+常见用法：
+- 调用 `create_env1/2/3/create_env_fb` 生成保存到磁盘的实验环境
+- 使用 `env_create_agent_test_*` 系列函数构造不同拓扑下的 agent 数据
+
+注意：许多函数会创建或覆盖 `Saving_path` 下的 `agent_{i}` 目录。
+"""
+
 from prompt_env1 import *
 from LLM import *
 from sre_constants import error
@@ -13,6 +27,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
 
+# 默认的 agent 数量常量，可被 env_create_* 调用覆盖
 NUM_OF_AGENTS = 100
 
 class NumpyEncoder(json.JSONEncoder):
@@ -28,6 +43,12 @@ class NumpyEncoder(json.JSONEncoder):
 
 #[TODO] replace the hard-coded definition with external files
 def create_rumors_test():
+  """
+  返回一个示例谣言字典，用于测试或初始化实验环境。
+
+  返回格式为 {id: 文本}。函数目前包含若干示例谣言，可根据实验需要替换或
+  从外部文件加载（TODO）。
+  """
 
   rumor_list = {
       0: 'Nicolae Ceausescu does not died!',
@@ -39,31 +60,41 @@ def create_rumors_test():
   return rumor_list
 
 def read_facebook_network(id):
+  """
+  从仓库的 `facebook` 子目录读取指定 id 的社交网络（.edges、.feat、.egofeat），
+  构建 NetworkX 图并返回。
+
+  说明：
+  - `id` 对应样本文件名，例如 `facebook/686.edges`。
+  - 函数会打印节点/边数量，并绘制&保存网络图像到当前目录。
+  - 返回值为 NetworkX 的 Graph 对象，节点未必有 'label' 属性（如果有会被用于绘图）。
+  """
+
   dir = 'facebook'
   edges_path = f'{dir}/{id}.edges'
   with open(edges_path, 'r') as file:
       edges = [tuple(map(int, line.strip().split())) for line in file]
 
-  # Create a Graph using NetworkX
+  # 使用 NetworkX 创建无向图并加入边
   G = nx.Graph()
   G.add_edges_from(edges)
 
-  # Check the number of nodes and edges
+  # 打印基本信息以便调试
   print("Number of nodes:", G.number_of_nodes())
   print("Number of edges:", G.number_of_edges())
 
-  # Load node features
+  # 读取节点特征（若存在）并展示前几行
   feat_path = f'{dir}/{id}.feat'
   features = pd.read_csv(feat_path, sep=' ', header=None)
   features.columns = ['node'] + [f'feat_{i}' for i in range(1, features.shape[1])]
   print(features.head())
 
-  # Load ego features (assuming these are features for the ego node itself)
+  # 读取自我特征（ego features），通常是 ego 节点的特征向量
   egofeat_path = f'{dir}/{id}.egofeat'
   egofeatures = pd.read_csv(egofeat_path, sep=' ', header=None)
   print(egofeatures.head())
 
-  # Plot the graph
+  # 可视化并保存图像（便于人工检查拓扑）
   plt.figure(figsize=(8, 6))
   pos = nx.spring_layout(G, seed=42)
   nx.draw(G, pos, with_labels=True, labels=nx.get_node_attributes(G, 'label'), node_color='skyblue', node_size=6, edge_color='k', font_weight='bold')
@@ -74,6 +105,14 @@ def read_facebook_network(id):
   return G
 
 def create_random_posts_test(num = 10):
+  """
+  生成一个示例的随机帖子字典，默认包含 50 条日常生活类的短文案。
+
+  参数:
+  - num: 返回的帖子数（上限为内置样本数）
+
+  返回格式: {id: 文本}
+  """
 
   posts_list = {
       0: 'Had the best cup of coffee this morning; it made my day!',
@@ -129,9 +168,19 @@ def create_random_posts_test(num = 10):
   }
 
 
+  # 根据请求数量截取样本并返回
   return {i: posts_list[i] for i in range(min(num, len(posts_list)))}
 
 def env_create_agent_test_facebook(Saving_path, id = 686):
+  """
+  从 Facebook 格式数据构建实验 agent 文件：
+  - 读取 `agents_170.json` 作为 agent 模板
+  - 读取指定 id 的 .edges 文件构建图并重标号（0..N-1）
+  - 将图中每个节点的朋友列表写入对应 agent 的 JSON，并保存到 `Saving_path/agent_{i}`
+
+  此函数会为度数最高的前 5 个节点设置较高的谣言接受/传播能力（作为示例）。
+  """
+
   with open('agents_170.json', 'r') as file:
     agent_list = json.load(file)
 
@@ -140,24 +189,24 @@ def env_create_agent_test_facebook(Saving_path, id = 686):
   with open(edges_path, 'r') as file:
       edges = [tuple(map(int, line.strip().split())) for line in file]
 
-  # Create a Graph using NetworkX
+  # 使用 NetworkX 创建图并添加边
   G = nx.Graph()
   G.add_edges_from(edges)
 
-  # Check the number of nodes and edges
+  # 打印信息并重标号节点（确保节点从 0 开始连续）
   print("Number of nodes:", G.number_of_nodes())
   print("Number of edges:", G.number_of_edges())
 
   mapping = {old_label: new_label for new_label, old_label in enumerate(G.nodes)}
   G = nx.relabel_nodes(G, mapping)
 
+  # 使用 agent_list 的名称作为节点标签，便于繪图显示
   count = 0
   for node in G.nodes:
-      #print(node)
       G.nodes[node]['label'] = agent_list[str(count)]['agent_name']
       count += 1
 
-  # Plot the graph
+  # 可视化并保存
   plt.figure(figsize=(8, 6))
   pos = nx.spring_layout(G, seed=42)
   nx.draw(G, pos, with_labels=True, labels=nx.get_node_attributes(G, 'label'), node_color='skyblue', node_size=500, edge_color='k', font_weight='bold')
@@ -165,28 +214,26 @@ def env_create_agent_test_facebook(Saving_path, id = 686):
   plt.savefig(f"Social_Graph_FB_{id}.png")
   plt.show()
 
-  # Save the graph
+  # 将图写出为 graphml，便于在外部工具加载
   file_path = f"Social_Graph_FB_{id}.graphml"
   nx.write_graphml(G, file_path)
 
+  # 计算度数并找到前 5 位高连接节点
   degrees = {i: len(list(G.neighbors(i))) for i in range(G.number_of_nodes())}
   top_5_agents = sorted(degrees, key=degrees.get, reverse=True)[:5]
-  # Update agents with their friends list and save their data
-  for i in range(G.number_of_nodes()):
-      
-    agent = agent_list[str(i)]
 
+  # 将朋友列表写入各 agent 配置并保存到磁盘
+  for i in range(G.number_of_nodes()):
+    agent = agent_list[str(i)]
     friends = list(G.neighbors(i))
     agent['friends'] = friends
 
-    #Test
-    #agent['agent_rumors_acc'] = '1'
-    #agent['agent_rumors_spread'] = '1'
-
+    # 示例性地给高连接节点设置更强的谣言接收/传播能力
     if i in top_5_agents:
         agent['agent_rumors_acc'] = '4'
         agent['agent_rumors_spread'] = '3'
 
+    # 每次都确保目标目录存在（先删除再创建，保证干净）
     if not os.path.exists(Saving_path+f'/agent_{i}'):
       os.makedirs(Saving_path+f'/agent_{i}', exist_ok=True)
     else:
@@ -198,6 +245,17 @@ def env_create_agent_test_facebook(Saving_path, id = 686):
 
 
 def env_create_agent_test_sc(num, Saving_path):
+  """
+  生成一个带有优先连接（Scale-Free / preferential attachment）特性的社交图并将
+  agent 信息写出到 `Saving_path`。
+
+  实现方式：
+  - 读取 `agents_100.json` 作为 agent 模板
+  - 前 4 个节点构造一个完全连接子图以作为种子
+  - 之后的节点按 preferential attachment 规则连接到已有节点（通过度数比例）
+  - 将图保存为 image 与 graphml，并把每个 agent 的朋友列表写入 JSON
+  """
+
   with open('agents_100.json', 'r') as file:
     agent_list = json.load(file)
 
@@ -206,12 +264,12 @@ def env_create_agent_test_sc(num, Saving_path):
   for i in range(num):
     G.add_node(i, label=agent_list[str(i)]['agent_name'])
 
-  # Add fully connected subgraph among the first 3 nodes
+  # seed: 前 4 个节点构成完全图
   for i in range(4):
       for j in range(i+1, 4):
           G.add_edge(i, j)
 
-  # Add edges based on preferential attachment
+  # 根据 preferential attachment 添加边
   j = 4
   np.random.seed(66)
   while j < num:
@@ -227,7 +285,7 @@ def env_create_agent_test_sc(num, Saving_path):
               G.add_edge(n, k)
       j += 1
 
-  # Plot the graph
+  # 绘图并保存
   plt.figure(figsize=(8, 6))
   pos = nx.spring_layout(G, seed=42)
   nx.draw(G, pos, with_labels=True, labels=nx.get_node_attributes(G, 'label'), node_color='skyblue', node_size=500, edge_color='k', font_weight='bold')
@@ -235,25 +293,18 @@ def env_create_agent_test_sc(num, Saving_path):
   plt.savefig("Social_Graph_sc.png")
   plt.show()
 
-  # Save the graph
   file_path = "Social_Graph_sc.graphml"
   nx.write_graphml(G, file_path)
 
-  # Test: manually define values for top 5 nodes
+  # 将朋友列表写到 agent 配置并保存
   degrees = {i: len(list(G.neighbors(i))) for i in range(num)}
   top_5_agents = sorted(degrees, key=degrees.get, reverse=True)[:5]
-  # Update agents with their friends list and save their data
   for i in range(num):
-      
     agent = agent_list[str(i)]
-
     friends = list(G.neighbors(i))
     agent['friends'] = friends
 
-    #Test
-    #agent['agent_rumors_acc'] = '1' # Max 4
-    #agent['agent_rumors_spread'] = '1' # Max 3
-
+    # 给高连接节点示例性地设置更强能力
     if i in top_5_agents:
         agent['agent_rumors_acc'] = '4'
         agent['agent_rumors_spread'] = '3'
@@ -268,6 +319,13 @@ def env_create_agent_test_sc(num, Saving_path):
         json.dump(agent, f, indent = 4, cls=NumpyEncoder)
 
 def env_create_agent_test_random(num, Saving_path):
+  """
+  使用随机策略构造一个社交图：
+  - 以 `agents_100.json` 为模板创建节点
+  - 先构造一个小型完全子图作为种子，然后以随机采样的方式添加边直到达到目标边数
+  - 将结果保存为图像和 graphml，并写出每个 agent 的朋友列表
+  """
+
   with open('agents_100.json', 'r') as file:
     agent_list = json.load(file)
 
@@ -276,12 +334,12 @@ def env_create_agent_test_random(num, Saving_path):
   for i in range(num):
     G.add_node(i, label=agent_list[str(i)]['agent_name'])
 
-  # Add fully connected subgraph among the first 3 nodes
+  # seed 完全子图
   for i in range(4):
       for j in range(i+1, 4):
           G.add_edge(i, j)
 
-  # Add edges based on preferential attachment
+  # 随机添加边直到达到指定数量（这里以 edge_num < 390 为例）
   j = 4
   np.random.seed(66)
   edge_num = 0
@@ -294,7 +352,7 @@ def env_create_agent_test_random(num, Saving_path):
         G.add_edge(u, v)
         edge_num += 1
 
-  # Plot the graph
+  # 绘图并保存
   plt.figure(figsize=(8, 6))
   pos = nx.spring_layout(G, seed=42)
   nx.draw(G, pos, with_labels=True, labels=nx.get_node_attributes(G, 'label'), node_color='skyblue', node_size=500, edge_color='k', font_weight='bold')
@@ -302,21 +360,14 @@ def env_create_agent_test_random(num, Saving_path):
   plt.savefig("Social_Graph_random.png")
   plt.show()
 
-  # Save the graph
   file_path = "Social_Graph_random.graphml"
   nx.write_graphml(G, file_path)
 
-  # Update agents with their friends list and save their data
+  # 将朋友列表写入每个 agent 的 json 并保存
   for i in range(num):
-      
     agent = agent_list[str(i)]
-
     friends = list(G.neighbors(i))
     agent['friends'] = friends
-
-    #Test
-    #agent['agent_rumors_acc'] = '1'
-    #agent['agent_rumors_spread'] = '1'
 
     if not os.path.exists(Saving_path+f'/agent_{i}'):
       os.makedirs(Saving_path+f'/agent_{i}', exist_ok=True)
@@ -328,13 +379,20 @@ def env_create_agent_test_random(num, Saving_path):
         json.dump(agent, f, indent = 4, cls=NumpyEncoder)
 
 def env_create_agent_test_small_world(num, Saving_path):
+  """
+  使用 Watts-Strogatz 小世界模型生成社交网络，并写出 agent 数据到磁盘。
+
+  参数：
+  - num: 节点数量
+  - Saving_path: 输出目录
+  """
+
   with open('agents_100.json', 'r') as file:
     agent_list = json.load(file)
 
   np.random.seed(66)
 
   # Generate a small-world network using the Watts-Strogatz model.
-
   nearest_neighbors = 4  # Each node is connected to 4 nearest neighbors
   rewiring_prob = 0.3
   G = nx.watts_strogatz_graph(num, nearest_neighbors, rewiring_prob)
@@ -342,7 +400,7 @@ def env_create_agent_test_small_world(num, Saving_path):
   for i in range(num):
     G.nodes[i]['label'] = agent_list[str(i)]['agent_name']
 
-  # Plot the graph
+  # 绘图并保存
   plt.figure(figsize=(8, 6))
   pos = nx.spring_layout(G, seed=42)
   nx.draw(G, pos, with_labels=True, labels=nx.get_node_attributes(G, 'label'), node_color='skyblue', node_size=500, edge_color='k', font_weight='bold')
@@ -356,16 +414,9 @@ def env_create_agent_test_small_world(num, Saving_path):
 
   # Update agents with their friends list and save their data
   for i in range(num):
-      
     agent = agent_list[str(i)]
-
     friends = list(G.neighbors(i))
     agent['friends'] = friends
-
-    #Test
-    #if 
-    #agent['agent_rumors_acc'] = '1'
-    #agent['agent_rumors_spread'] = '1'
 
     if not os.path.exists(Saving_path+f'/agent_{i}'):
       os.makedirs(Saving_path+f'/agent_{i}', exist_ok=True)
@@ -377,6 +428,11 @@ def env_create_agent_test_small_world(num, Saving_path):
         json.dump(agent, f, indent = 4, cls=NumpyEncoder)
 
 def env_create_agent_test(num, Saving_path):
+  """
+  为小规模测试创建一个手工定义的 agent 列表（示例数据）。n
+  该函数用于调试或演示场景，其中 agent 属性是预先设定的。
+  """
+
   agent_list = {
       0: {
           'agent_name': 'Keqing',
@@ -465,8 +521,8 @@ def env_create_agent_test(num, Saving_path):
   G = nx.Graph()
   for i in range(num):
     G.add_node(i, label=agent_list[i]['agent_name'])
-  #G.add_edges_from([(1, 2), (2, 0), (1, 0)])
 
+  # 使用随机策略添加若干边，构建一个小型社交网络用于演示
   random.seed(4242)
   edge_num = 0
   p = 0.6
@@ -478,7 +534,7 @@ def env_create_agent_test(num, Saving_path):
         G.add_edge(u, v)
         edge_num += 1
 
-  # Plot the graph
+  # 绘图并保存
   plt.figure(figsize=(8, 6))
   pos = nx.spring_layout(G, seed=42)
   nx.draw(G, pos, with_labels=True, labels=nx.get_node_attributes(G, 'label'), node_color='skyblue', node_size=500, edge_color='k', font_weight='bold')
@@ -486,14 +542,13 @@ def env_create_agent_test(num, Saving_path):
   plt.savefig("Social_Graph.png")
   plt.show()
 
-  # Save the graph
+  # 保存 graphml
   file_path = "Social_Graph.graphml"
   nx.write_graphml(G, file_path)
 
+  # 将朋友列表写入 agent 配置并保存
   for i in range(num):
-      
     agent = agent_list[i]
-
     friends = list(G.neighbors(i))
     agent['friends'] = friends
 
@@ -509,16 +564,19 @@ def env_create_agent_test(num, Saving_path):
 
 
 def create_env1(Saving_path): # Random 10
+  """
+  创建实验环境 1（随机网络，默认 NUM_OF_AGENTS 节点）并把相关文件写入 `Saving_path`。
+  """
   if not os.path.exists(Saving_path):
     os.makedirs(Saving_path, exist_ok=True)
   else:
     shutil.rmtree(Saving_path)
     os.makedirs(Saving_path, exist_ok=True)
 
-  # Define each agent and his/her/their relations
+  # 生成 agent 配置
   env_create_agent_test_random(NUM_OF_AGENTS, Saving_path)
 
-  # Create list of rumors and posts
+  # 创建并写入谣言与帖子列表
   rumor_list = create_rumors_test()
   with open(Saving_path+f'/rumor_list.json', 'w') as f:
     json.dump(rumor_list, f, indent = 4, cls=NumpyEncoder)
@@ -528,16 +586,19 @@ def create_env1(Saving_path): # Random 10
     json.dump(posts_list, f, indent = 4, cls=NumpyEncoder)
 
 def create_env2(Saving_path): # Scale Free 20
+  """
+  创建实验环境 2（Scale-Free 网络示例），并写出需要的文件到 `Saving_path`。
+  """
   if not os.path.exists(Saving_path):
     os.makedirs(Saving_path, exist_ok=True)
   else:
     shutil.rmtree(Saving_path)
     os.makedirs(Saving_path, exist_ok=True)
 
-  # Define each agent and his/her/their relations
+  # 生成优先连接网络并写出 agent 数据
   env_create_agent_test_sc(100, Saving_path)
 
-  # Create list of rumors and posts
+  # 写出谣言与帖子列表
   rumor_list = create_rumors_test()
   with open(Saving_path+f'/rumor_list.json', 'w') as f:
     json.dump(rumor_list, f, indent = 4, cls=NumpyEncoder)
@@ -547,16 +608,19 @@ def create_env2(Saving_path): # Scale Free 20
     json.dump(posts_list, f, indent = 4, cls=NumpyEncoder)
 
 def create_env3(Saving_path): # Scale Free 20
+  """
+  创建实验环境 3（小世界网络示例），并写出需要的文件到 `Saving_path`。
+  """
   if not os.path.exists(Saving_path):
     os.makedirs(Saving_path, exist_ok=True)
   else:
     shutil.rmtree(Saving_path)
     os.makedirs(Saving_path, exist_ok=True)
 
-  # Define each agent and his/her/their relations
+  # 生成小世界网络并写出 agent 数据
   env_create_agent_test_small_world(100, Saving_path)
 
-  # Create list of rumors and posts
+  # 写出谣言与帖子列表
   rumor_list = create_rumors_test()
   with open(Saving_path+f'/rumor_list.json', 'w') as f:
     json.dump(rumor_list, f, indent = 4, cls=NumpyEncoder)
@@ -566,16 +630,19 @@ def create_env3(Saving_path): # Scale Free 20
     json.dump(posts_list, f, indent = 4, cls=NumpyEncoder)
 
 def create_env_fb(Saving_path, id = 686): # Scale Free 20
+  """
+  创建基于 Facebook 数据的实验环境（读取指定 id 的 Facebook 样例文件）。
+  """
   if not os.path.exists(Saving_path):
     os.makedirs(Saving_path, exist_ok=True)
   else:
     shutil.rmtree(Saving_path)
     os.makedirs(Saving_path, exist_ok=True)
 
-  # Define each agent and his/her/their relations
+  # 生成并写出 agent 数据（从 Facebook edges 与 agents_170.json）
   env_create_agent_test_facebook(Saving_path, id = id)
 
-  # Create list of rumors and posts
+  # 写出谣言与帖子列表（示例取 50 条）
   rumor_list = create_rumors_test()
   with open(Saving_path+f'/rumor_list.json', 'w') as f:
     json.dump(rumor_list, f, indent = 4, cls=NumpyEncoder)
@@ -586,9 +653,13 @@ def create_env_fb(Saving_path, id = 686): # Scale Free 20
   
 
 def main():
+  """
+  简单的入口函数示例：
+  - 将 `Code_dir_path` 修改为你的项目路径后运行以创建环境文件（只需第一次运行）
+  """
   Code_dir_path = 'path_to_multi-agent-framework/multi-agent-framework/'  # Put the current code directory path here
   Saving_path = Code_dir_path + 'Env_Rumor_Test'
-  
+
   # The first time to create the environment, after that you can comment it
   create_env2(Saving_path)
   #G = read_facebook_network(686)
